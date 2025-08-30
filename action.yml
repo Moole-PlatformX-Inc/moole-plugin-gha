@@ -1,4 +1,4 @@
-name: "Send Build Files"
+name: "Moole Security"
 description: "Reads top-level build file, base64-encodes, sends JSON to your scanner"
 author: "you"
 branding:
@@ -12,7 +12,7 @@ inputs:
   pat:
     description: "Personal access token to include in request body"
     required: false
-    
+
   project:
     description: "Project identifier (sent as projectId)"
     required: true

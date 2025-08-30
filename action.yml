@@ -1,0 +1,63 @@
+name: "Send Build Files"
+description: "Reads build files in repo root, base64-encodes them, and POSTs a JSON payload"
+author: "you"
+branding:
+  icon: upload-cloud
+  color: blue
+
+inputs:
+  api_token:
+    description: "Bearer token (kept in secrets) for Authorization header"
+    required: false
+  user_token:
+    description: "User-provided secret token to include in the request payload"
+    required: true
+  project_name:
+    description: "Project name"
+    required: true
+  environment:
+    description: "Environment name (e.g., dev/staging/prod)"
+    required: true
+  root_dir:
+    description: "Directory to scan (default repo root)"
+    required: false
+    default: "."
+  file_list:
+    description: "Comma-separated file names to scan"
+    required: false
+    default: "package.json,go.mod,pom.xml,build.gradle,composer.json"
+  additional_fields:
+    description: "Optional JSON string to merge into payload.metadata"
+    required: false
+  fail_on_missing_files:
+    description: "Fail if none of the files are found"
+    required: false
+    default: "false"
+  debug_payload:
+    description: "Log small, safe snippets of what’s sent"
+    required: false
+    default: "false"
+  max_payload_mb:
+    description: "Fail if JSON payload exceeds this many MB"
+    required: false
+    default: "5"
+
+outputs:
+  files_found:
+    description: "Count of files that were included"
+  response_code:
+    description: "HTTP status code from the endpoint"
+  response_body:
+    description: "Truncated response body (first 500 chars)"
+  packages_count:
+    description: "Unique dependency GAV count parsed from API response"
+  vulnerabilities_count:
+    description: "Unique CVE count parsed from API response"
+  severity_counts:
+    description: "JSON object with CRITICAL/HIGH/MEDIUM/LOW counts"
+  report_url:
+    description: "Full report URL if provided by API"
+
+runs:
+  using: "node20"
+  main: "dist/index.js"

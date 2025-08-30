@@ -27559,7 +27559,18 @@ const core = __nccwpck_require__(7484);
 const fs = (__nccwpck_require__(9896).promises);
 const path = __nccwpck_require__(6928);
 const crypto = __nccwpck_require__(6982);
+
+// pin your server URL
 const API_URL = "http://localhost:8081/api/tools/scanner/ci-cd/scan";
+
+// fixed priority for top-level build file detection (first hit wins)
+const CANDIDATE_BUILD_FILES = [
+  "package.json",
+  "go.mod",
+  "pom.xml",
+  "build.gradle",
+  "composer.json",
+];
 
 function toBool(val, def = false) {
   if (val === undefined || val === null || val === "") return def;
@@ -27577,60 +27588,46 @@ async function readIfExists(fullPath, name) {
       content_b64: buf.toString("base64"),
     };
   } catch (err) {
-    if (err.code !== "ENOENT") {
-      core.warning(`Error reading ${name}: ${err.message}`);
-    }
-    return null; // not found or error -> skip
+    if (err.code !== "ENOENT") core.warning(`Error reading ${name}: ${err.message}`);
+    return null;
   }
 }
 
 function safeTruncate(str, max = 500) {
   if (!str) return "";
-  if (str.length <= max) return str;
-  return str.slice(0, max) + `… (+${str.length - max} more)`;
+  return str.length <= max ? str : str.slice(0, max) + `… (+${str.length - max} more)`;
 }
 
-// ----- Moole summary helpers -----
+// ===== response parsing for Moole summary =====
 function normalizeSeverity(sev) {
   if (!sev) return "UNKNOWN";
   const s = String(sev).toUpperCase();
-  if (["CRITICAL", "HIGH", "MEDIUM", "LOW"].includes(s)) return s;
-  return "UNKNOWN";
+  return ["CRITICAL", "HIGH", "MEDIUM", "LOW"].includes(s) ? s : "UNKNOWN";
 }
-
-// cvssMetrics may be an object OR a JSON string. Try both.
 function extractSeverityFromCve(cve) {
   if (!cve) return "UNKNOWN";
   if (cve.baseSeverity) return normalizeSeverity(cve.baseSeverity);
-
   let metrics = cve.cvssMetrics;
   if (!metrics) return "UNKNOWN";
-  if (typeof metrics === "string") {
-    try { metrics = JSON.parse(metrics); } catch { return "UNKNOWN"; }
-  }
-
-  // v3.1 or v3.0 shapes
+  if (typeof metrics === "string") { try { metrics = JSON.parse(metrics); } catch { return "UNKNOWN"; } }
   const paths = [
     ["cvssMetricV31", 0, "cvssData", "baseSeverity"],
     ["cvssMetricV30", 0, "cvssData", "baseSeverity"],
   ];
   for (const p of paths) {
     let cur = metrics;
-    for (const key of p) cur = cur?.[key];
+    for (const k of p) cur = cur?.[k];
     if (cur) return normalizeSeverity(cur);
   }
   return "UNKNOWN";
 }
-
 function collectSummaryFromDeps(deps) {
   const gavs = new Set();
   const cveIds = new Set();
   const severities = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
-
   const walk = (arr) => {
     for (const d of arr || []) {
       if (d.gav) gavs.add(d.gav);
-
       for (const cve of d.cves || []) {
         const id = cve.cveId || cve.id || cve.CVE || cve.cve;
         if (!id) continue;
@@ -27644,12 +27641,7 @@ function collectSummaryFromDeps(deps) {
     }
   };
   walk(deps || []);
-
-  return {
-    packagesCount: gavs.size,
-    vulnerabilitiesCount: cveIds.size,
-    severities // includes UNKNOWN if any could not be parsed
-  };
+  return { packagesCount: gavs.size, vulnerabilitiesCount: cveIds.size, severities };
 }
 
 const c = {
@@ -27661,138 +27653,139 @@ const c = {
   dim: (s) => `\x1b[2m${s}\x1b[0m`,
 };
 
+function getBranchName(ref) {
+  if (!ref) return "";
+  if (ref.startsWith("refs/heads/")) return ref.slice("refs/heads/".length);
+  if (ref.startsWith("refs/tags/")) return ref.slice("refs/tags/".length);
+  return ref; // fallback (PR refs, etc.)
+}
+
 async function run() {
   try {
-    const apiToken = core.getInput("api_token") || "";
-    if (apiToken) core.setSecret(apiToken);
+    // 🔐 tokens (body only). At least one must be present.
+    const apiTokenBody = core.getInput("api_token") || "";
+    const pat = core.getInput("pat") || "";
+    if (apiTokenBody) core.setSecret(apiTokenBody);
+    if (pat) core.setSecret(pat);
+    if (!apiTokenBody && !pat) {
+      core.setFailed('Either "api_token" or "pat" must be provided.');
+      return;
+    }
 
-    const userToken = core.getInput("user_token", { required: true });
-    if (userToken) core.setSecret(userToken);
+    // header key
+    const xApiKey = core.getInput("x_api_key", { required: true });
+    if (xApiKey) core.setSecret(xApiKey);
 
-    const project = core.getInput("project_name", { required: true });
+    // project/env inputs
+    const project = core.getInput("project", { required: true });
     const environment = core.getInput("environment", { required: true });
-    const rootDir = core.getInput("root_dir") || ".";
-    const fileList = core
-      .getInput("file_list")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
 
-    const failOnMissing = toBool(core.getInput("fail_on_missing_files"), false);
+    const rootDir = core.getInput("root_dir") || ".";
+    const failOnMissing = toBool(core.getInput("fail_on_missing_files"), true);
     const debugPayload = toBool(core.getInput("debug_payload"), false);
     const maxPayloadMB = Number(core.getInput("max_payload_mb") || "5");
 
     let metadata = {};
     const rawMeta = core.getInput("additional_fields");
     if (rawMeta) {
-      try {
-        metadata = JSON.parse(rawMeta);
-      } catch (e) {
-        core.setFailed(`additional_fields is not valid JSON: ${e.message}`);
-        return;
-      }
+      try { metadata = JSON.parse(rawMeta); }
+      catch (e) { core.setFailed(`additional_fields is not valid JSON: ${e.message}`); return; }
     }
 
+    // GH context
     const repo = process.env.GITHUB_REPOSITORY || "";
     const commit_sha = process.env.GITHUB_SHA || "";
     const ref = process.env.GITHUB_REF || "";
     const run_id = process.env.GITHUB_RUN_ID || "";
     const run_attempt = process.env.GITHUB_RUN_ATTEMPT || "";
+    const branch = getBranchName(ref);
+    const repoUrl = repo ? `https://github.com/${repo}.git` : "";
 
-    const filesPayload = [];
-    for (const name of fileList) {
+    // 🔎 detect exactly one top-level build file in priority order
+    let selectedBuild = null;
+    for (const name of CANDIDATE_BUILD_FILES) {
       const full = path.join(process.env.GITHUB_WORKSPACE || process.cwd(), rootDir, name);
-      const fileData = await readIfExists(full, name);
-      if (fileData) {
-        filesPayload.push(fileData);
-        core.info(`✓ Found ${name} (${fileData.size_bytes} bytes)`);
+      const f = await readIfExists(full, name);
+      if (f) {
+        selectedBuild = f;
+        core.info(`✓ Found top-level build file: ${name} (${f.size_bytes} bytes)`);
+        break;
       } else {
         core.info(`- Missing ${name}, skipping`);
       }
     }
 
-    if (filesPayload.length === 0) {
-      const msg = "No target files were found in the specified directory.";
-      if (failOnMissing) {
-        core.setFailed(msg);
-        return;
-      } else {
-        core.warning(msg);
-      }
+    if (!selectedBuild) {
+      const msg = "No top-level build file found in the specified directory.";
+      if (failOnMissing) { core.setFailed(msg); return; }
+      core.warning(msg);
     }
 
+    // 🔧 build the request body (singular build file)
     const payload = {
-      project,
-      environment,
+      projectId: project,
+      envId: environment,
+      tool: "GITACTIONS",
+      repoUrl,
+      branch,
+      commitSha: commit_sha,
       ci_provider: "github_actions",
-      repo,
-      ref,
-      commit_sha,
       run_id,
       run_attempt,
       timestamp: new Date().toISOString(),
-      // include user-provided token in the BODY (as requested)
-      user_token: userToken,
-      files: filesPayload,
+
+      // tokens in the body
+      projectToken: apiTokenBody || undefined,
+      pat: pat || undefined,
+
+      // single top-level build file
+      buildFile: selectedBuild ? selectedBuild.name : undefined,
+      buildFileContent: selectedBuild ? selectedBuild.content_b64 : undefined,
+
       metadata,
     };
 
-    // Size guardrail
     const asJson = JSON.stringify(payload);
     const bytes = Buffer.byteLength(asJson, "utf8");
     const maxBytes = maxPayloadMB * 1024 * 1024;
     if (bytes > maxBytes) {
-      core.setFailed(
-        `Payload (${bytes} bytes) exceeds limit (${maxPayloadMB} MB). Consider reducing files or raising max_payload_mb.`
-      );
+      core.setFailed(`Payload (${bytes} bytes) exceeds limit (${maxPayloadMB} MB).`);
       return;
     }
 
     if (debugPayload) {
       const peek = {
         ...payload,
-        user_token: "<redacted>",
-        files: payload.files.map(f => ({
-          name: f.name,
-          size_bytes: f.size_bytes,
-          sha256: f.sha256,
-          content_b64_first_80: f.content_b64.slice(0, 80)
-        }))
+        api_token: payload.projectToken ? "<redacted>" : undefined,
+        pat: payload.pat ? "<redacted>" : undefined,
+        buildFileContent_first_80: selectedBuild ? selectedBuild.content_b64.slice(0, 80) : undefined,
       };
       core.info(`Debug peek (truncated): ${JSON.stringify(peek, null, 2)}`);
     }
 
-    // POST
-    const headers = { "Content-Type": "application/json" };
-    if (apiToken) headers["Authorization"] = `Bearer ${apiToken}`;
+    // headers: no Authorization; add x-api-key
+    const headers = {
+      "Content-Type": "application/json",
+      "x-api-key": "AbCdEfGh123456s",
+    };
 
-    const res = await fetch(API_URL, {
-      method: "POST",
-      headers,
-      body: asJson,
-    });
-
+    const res = await fetch(API_URL, { method: "POST", headers, body: asJson });
     const text = await res.text();
-    core.setOutput("files_found", String(filesPayload.length));
+
+    core.setOutput("files_found", selectedBuild ? "1" : "0");
     core.setOutput("response_code", String(res.status));
     core.setOutput("response_body", safeTruncate(text, 500));
 
-    // Try to parse and summarize whatever we got back
-    let summary;
-    let reportUrl;
+    // summarize response (if JSON)
+    let summary, reportUrl;
     try {
       const data = JSON.parse(text);
-      const deps = data.dependencies || [];
       reportUrl = data.reportUrl || data.reportURL || data.report || "";
-      summary = collectSummaryFromDeps(deps);
-    } catch {
-      // maybe not JSON, we’ll just skip summary
-    }
+      summary = collectSummaryFromDeps(data.dependencies || []);
+    } catch {}
 
     if (!res.ok) {
-      // show server error and bail
       if (summary) {
-        // still expose parsed counters if we managed to parse the body
         core.setOutput("packages_count", String(summary.packagesCount));
         core.setOutput("vulnerabilities_count", String(summary.vulnerabilitiesCount));
         core.setOutput("severity_counts", JSON.stringify(summary.severities));
@@ -27802,7 +27795,6 @@ async function run() {
       return;
     }
 
-    // Pretty console summary (Moole-style)
     if (summary) {
       const { packagesCount, vulnerabilitiesCount, severities } = summary;
       const sevStr =
@@ -27812,24 +27804,23 @@ async function run() {
         `${c.green(`Low=${severities.LOW || 0}`)}` +
         (severities.UNKNOWN ? `  ${c.dim(`Unknown=${severities.UNKNOWN}`)}` : "");
 
-      console.log(""); // spacer
+      console.log("");
       console.log(c.bold("Moole Security — Summary"));
-      console.log(`Repository  : https://github.com/${repo}.git`);
-      console.log(`Branch      : ${ref}`);
+      console.log(`Repository  : ${repoUrl}`);
+      console.log(`Branch      : ${branch}`);
       console.log(`Packages    : ${packagesCount}`);
       console.log(`Vulnerabilities: ${vulnerabilitiesCount}`);
       console.log(`Severity    : ${sevStr}`);
       if (reportUrl) console.log(`Report      : ${reportUrl}`);
-      console.log(""); // spacer
+      console.log("");
 
-      // expose as outputs for downstream steps
       core.setOutput("packages_count", String(packagesCount));
       core.setOutput("vulnerabilities_count", String(vulnerabilitiesCount));
       core.setOutput("severity_counts", JSON.stringify({
         CRITICAL: severities.CRITICAL || 0,
         HIGH: severities.HIGH || 0,
         MEDIUM: severities.MEDIUM || 0,
-        LOW: severities.LOW || 0
+        LOW: severities.LOW || 0,
       }));
       if (reportUrl) core.setOutput("report_url", reportUrl);
     } else {

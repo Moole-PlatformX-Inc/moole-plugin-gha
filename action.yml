@@ -1,5 +1,5 @@
 name: "Send Build Files"
-description: "Reads build files in repo root, base64-encodes them, and POSTs a JSON payload"
+description: "Reads top-level build file, base64-encodes, sends JSON to your scanner"
 author: "you"
 branding:
   icon: upload-cloud
@@ -7,34 +7,32 @@ branding:
 
 inputs:
   api_token:
-    description: "Bearer token (kept in secrets) for Authorization header"
+    description: "API token to include in request body (NOT a header)"
     required: false
-  user_token:
-    description: "User-provided secret token to include in the request payload"
-    required: true
-  project_name:
-    description: "Project name"
+  pat:
+    description: "Personal access token to include in request body"
+    required: false
+    
+  project:
+    description: "Project identifier (sent as projectId)"
     required: true
   environment:
-    description: "Environment name (e.g., dev/staging/prod)"
+    description: "Environment identifier (sent as envId)"
     required: true
+
   root_dir:
     description: "Directory to scan (default repo root)"
     required: false
     default: "."
-  file_list:
-    description: "Comma-separated file names to scan"
-    required: false
-    default: "package.json,go.mod,pom.xml,build.gradle,composer.json"
   additional_fields:
-    description: "Optional JSON string to merge into payload.metadata"
+    description: "Optional JSON merged into payload.metadata"
     required: false
   fail_on_missing_files:
-    description: "Fail if none of the files are found"
+    description: "Fail if no top-level build file is found"
     required: false
-    default: "false"
+    default: "true"
   debug_payload:
-    description: "Log small, safe snippets of what’s sent"
+    description: "Log tiny, redacted peek of payload"
     required: false
     default: "false"
   max_payload_mb:
@@ -44,19 +42,19 @@ inputs:
 
 outputs:
   files_found:
-    description: "Count of files that were included"
+    description: "1 if a build file was included, else 0"
   response_code:
-    description: "HTTP status code from the endpoint"
+    description: "HTTP status code"
   response_body:
-    description: "Truncated response body (first 500 chars)"
+    description: "Truncated response body"
   packages_count:
-    description: "Unique dependency GAV count parsed from API response"
+    description: "Unique dependency GAV count parsed from response"
   vulnerabilities_count:
-    description: "Unique CVE count parsed from API response"
+    description: "Unique CVE count parsed from response"
   severity_counts:
     description: "JSON object with CRITICAL/HIGH/MEDIUM/LOW counts"
   report_url:
-    description: "Full report URL if provided by API"
+    description: "Report URL from API, if present"
 
 runs:
   using: "node20"

@@ -27598,6 +27598,16 @@ function safeTruncate(str, max = 500) {
   return str.length <= max ? str : str.slice(0, max) + `… (+${str.length - max} more)`;
 }
 
+async function writeReportLink(reportUrl) {
+  if (!reportUrl) return;
+  // log a plain URL (clickable in logs)
+  console.log(`Full report   : ${reportUrl}`);
+  // add a clickable anchor to the Job Summary
+  await core.summary
+    .addRaw(`\n[**Open this for Full report**](${reportUrl})\n`)
+    .write();
+}
+
 function normalizeSeverity(sev) {
   if (!sev) return "UNKNOWN";
   const s = String(sev).toUpperCase();
@@ -27792,7 +27802,10 @@ async function run() {
         core.setOutput("packages_count", String(summary.packagesCount));
         core.setOutput("vulnerabilities_count", String(summary.vulnerabilitiesCount));
         core.setOutput("severity_counts", JSON.stringify(summary.severities));
-        if (reportUrl) core.setOutput("report_url", reportUrl);
+        if (reportUrl) {
+          core.setOutput("report_url", reportUrl);
+          await writeReportLink(reportUrl);   // <-- add link even on error
+        }
       }
       core.setFailed(`HTTP ${res.status}: ${safeTruncate(text, 500)}`);
       return;
@@ -27814,7 +27827,10 @@ async function run() {
       console.log(`Packages    : ${packagesCount}`);
       console.log(`Vulnerabilities: ${vulnerabilitiesCount}`);
       console.log(`Severity    : ${sevStr}`);
-      if (reportUrl) console.log(`Report      : ${reportUrl}`);
+      if (reportUrl) {
+        core.setOutput("report_url", reportUrl);
+        await writeReportLink(reportUrl);   // <-- clickable link in Job Summary
+      }
       console.log("");
 
       core.setOutput("packages_count", String(packagesCount));
@@ -27830,7 +27846,6 @@ async function run() {
       core.info("No JSON summary parsed from response (skipping Moole summary).");
     }
 
-    core.info(`✅ Sent payload successfully (HTTP ${res.status})`);
   } catch (err) {
     core.setFailed(err.message || String(err));
   }

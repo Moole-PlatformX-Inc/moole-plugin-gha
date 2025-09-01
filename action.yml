@@ -31,10 +31,6 @@ inputs:
     description: "Fail if no top-level build file is found"
     required: false
     default: "true"
-  debug_payload:
-    description: "Log tiny, redacted peek of payload"
-    required: false
-    default: "false"
   max_payload_mb:
     description: "Fail if JSON payload exceeds this many MB"
     required: false

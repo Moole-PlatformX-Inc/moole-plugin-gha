@@ -27599,28 +27599,41 @@ function safeTruncate(str, max = 500) {
 }
 
 // ===== response parsing for Moole summary =====
-function normalizeSeverity(sev) {
-  if (!sev) return "UNKNOWN";
-  const s = String(sev).toUpperCase();
-  return ["CRITICAL", "HIGH", "MEDIUM", "LOW"].includes(s) ? s : "UNKNOWN";
+// put this near the top, below safeTruncate()
+
+// ---- CVSS parser (from your code, JS-ified) ----
+function extractCvssMetricFields(cvssMetrics) {
+  let baseSeverity, baseScore, attackVector;
+  let metricsObj = {};
+
+  if (typeof cvssMetrics === "string") {
+    try { metricsObj = JSON.parse(cvssMetrics); } catch { metricsObj = {}; }
+  } else if (cvssMetrics && typeof cvssMetrics === "object") {
+    metricsObj = cvssMetrics;
+  }
+
+  const metricsArrays = Object.values(metricsObj);
+  const allMetrics = metricsArrays.flat();
+  const primary = allMetrics.find(m => m?.type === "Primary") || allMetrics.find(m => m?.type === "Secondary");
+
+  if (primary && primary.cvssData) {
+    baseSeverity = primary.cvssData.baseSeverity;
+    baseScore = primary.cvssData.baseScore != null ? String(primary.cvssData.baseScore) : undefined;
+    attackVector = primary.cvssData.attackVector;
+  }
+  return { baseSeverity, baseScore, attackVector };
+}
+
+// replace your old extractSeverityFromCve with this:
+function extractSeverityFromCve(cve) {
+  const { baseSeverity } = extractCvssMetricFields(cve?.cvssMetrics);
+  return normalizeSeverity(baseSeverity);
 }
 function extractSeverityFromCve(cve) {
-  if (!cve) return "UNKNOWN";
-  if (cve.baseSeverity) return normalizeSeverity(cve.baseSeverity);
-  let metrics = cve.cvssMetrics;
-  if (!metrics) return "UNKNOWN";
-  if (typeof metrics === "string") { try { metrics = JSON.parse(metrics); } catch { return "UNKNOWN"; } }
-  const paths = [
-    ["cvssMetricV31", 0, "cvssData", "baseSeverity"],
-    ["cvssMetricV30", 0, "cvssData", "baseSeverity"],
-  ];
-  for (const p of paths) {
-    let cur = metrics;
-    for (const k of p) cur = cur?.[k];
-    if (cur) return normalizeSeverity(cur);
-  }
-  return "UNKNOWN";
+  const { baseSeverity } = extractCvssMetricFields(cve?.cvssMetrics);
+  return normalizeSeverity(baseSeverity);
 }
+
 function collectSummaryFromDeps(deps) {
   const gavs = new Set();
   const cveIds = new Set();
@@ -27751,16 +27764,6 @@ async function run() {
       return;
     }
 
-    if (debugPayload) {
-      const peek = {
-        ...payload,
-        api_token: payload.projectToken ? "<redacted>" : undefined,
-        pat: payload.pat ? "<redacted>" : undefined,
-        buildFileContent_first_80: selectedBuild ? selectedBuild.content_b64.slice(0, 80) : undefined,
-      };
-      core.info(`Debug peek (truncated): ${JSON.stringify(peek, null, 2)}`);
-    }
-
     // headers: no Authorization; add x-api-key
     const headers = {
       "Content-Type": "application/json",
@@ -27778,7 +27781,7 @@ async function run() {
     let summary, reportUrl;
     try {
       const data = JSON.parse(text);
-      reportUrl = data.reportUrl || data.reportURL || data.report || "";
+      reportUrl = data.generatedReportUri || data.reportUrl || data.reportURL || data.report || "";
       summary = collectSummaryFromDeps(data.dependencies || []);
     } catch {}
 

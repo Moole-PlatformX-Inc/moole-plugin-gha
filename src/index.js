@@ -41,6 +41,11 @@ function safeTruncate(str, max = 500) {
   return str.length <= max ? str : str.slice(0, max) + `… (+${str.length - max} more)`;
 }
 
+function normalizeSeverity(sev) {
+  if (!sev) return "UNKNOWN";
+  const s = String(sev).toUpperCase();
+  return ["CRITICAL", "HIGH", "MEDIUM", "LOW"].includes(s) ? s : "UNKNOWN";
+}
 // ===== response parsing for Moole summary =====
 // put this near the top, below safeTruncate()
 
@@ -68,10 +73,6 @@ function extractCvssMetricFields(cvssMetrics) {
 }
 
 // replace your old extractSeverityFromCve with this:
-function extractSeverityFromCve(cve) {
-  const { baseSeverity } = extractCvssMetricFields(cve?.cvssMetrics);
-  return normalizeSeverity(baseSeverity);
-}
 function extractSeverityFromCve(cve) {
   const { baseSeverity } = extractCvssMetricFields(cve?.cvssMetrics);
   return normalizeSeverity(baseSeverity);
@@ -206,6 +207,7 @@ async function run() {
       core.setFailed(`Payload (${bytes} bytes) exceeds limit (${maxPayloadMB} MB).`);
       return;
     }
+
 
     // headers: no Authorization; add x-api-key
     const headers = {

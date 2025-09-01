@@ -116,8 +116,6 @@ async function run() {
     }
 
     // header key
-    const xApiKey = core.getInput("x_api_key", { required: true });
-    if (xApiKey) core.setSecret(xApiKey);
 
     // project/env inputs
     const project = core.getInput("project", { required: true });

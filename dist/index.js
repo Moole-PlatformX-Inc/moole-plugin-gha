@@ -27764,7 +27764,7 @@ async function run() {
     // headers: no Authorization; add x-api-key
     const headers = {
       "Content-Type": "application/json",
-      "x-api-key": "AbCdEfGh123456s",
+      "x-api-key": "AbCdEfGh123456",
     };
 
     const res = await fetch(API_URL, { method: "POST", headers, body: asJson });
